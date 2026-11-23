@@ -82,3 +82,24 @@ def transform_response(body, fn):
         body["choices"] = [{**choice, "message": _message(choice["message"], fn)} if isinstance(choice.get("message"), dict)
                            else choice for choice in body["choices"]]
     return body
+
+
+def add_notice(body, notice, anthropic):
+    """Appends the notice to the system prompt, after any cached prefix, so the provider cache still hits."""
+    body = dict(body)
+    if anthropic:
+        body["system"] = _appended(body.get("system"), notice)
+        return body
+    messages = list(body.get("messages", []))
+    if messages and messages[0].get("role") in ("system", "developer"):
+        messages[0] = {**messages[0], "content": _appended(messages[0].get("content"), notice)}
+    else:
+        messages.insert(0, {"role": "system", "content": notice})
+    body["messages"] = messages
+    return body
+
+
+def _appended(content, notice):
+    if isinstance(content, list):
+        return [*content, {"type": "text", "text": notice}]
+    return f"{content}\n\n{notice}" if content else notice

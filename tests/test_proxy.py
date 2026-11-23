@@ -41,6 +41,7 @@ class ProxyCase(unittest.IsolatedAsyncioTestCase):
     def proxy(self, transport=None, **options):
         masker = Masker([*BUILTIN.values(), dictionary({"PESSOA": ["Maria Souza"], "LOCAL": ['Sítio "Boa Vista"']})])
         upstream = httpx.AsyncClient(transport=transport or httpx.ASGITransport(app=self.upstream))
+        options.setdefault("notice", "")
         app = create_app(masker, "http://upstream", client=upstream, **options)
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://proxy")
 
@@ -257,6 +258,24 @@ class OperationTest(ProxyCase):
         async with self.proxy(transport=httpx.MockTransport(refuse)) as client:
             response = await client.post("/v1/chat/completions", json=CHAT)
         self.assertEqual((response.status_code, response.json()["error"]["type"]), (502, "llm_mask_ptbr"))
+
+    async def test_the_model_is_told_what_the_tokens_are(self):
+        self.reply = lambda received: JSONResponse({})
+        cached = {"type": "text", "text": "Regras.", "cache_control": {"type": "ephemeral"}}
+        async with self.proxy(notice="AVISO", unmasked_models=["local"]) as client:
+            await client.post("/v1/chat/completions", json=CHAT)
+            await client.post("/v1/chat/completions", json={"model": "m", "messages": [{"role": "system", "content": "Regras."}, *CHAT["messages"]]})
+            await client.post("/v1/messages", json={"model": "m", "messages": CHAT["messages"]})
+            await client.post("/v1/messages", json={"model": "m", "system": "Regras.", "messages": CHAT["messages"]})
+            await client.post("/v1/messages", json={"model": "m", "system": [cached], "messages": CHAT["messages"]})
+            await client.post("/v1/chat/completions", json={**CHAT, "model": "local"})
+        sent = [json.loads(request["raw"]) for request in self.seen]
+        self.assertEqual([m["role"] for m in sent[0]["messages"]], ["system", "user"])
+        self.assertEqual(sent[0]["messages"][0]["content"], "AVISO")
+        self.assertEqual(sent[1]["messages"][0], {"role": "system", "content": "Regras.\n\nAVISO"})
+        self.assertEqual((sent[2]["system"], sent[3]["system"]), ("AVISO", "Regras.\n\nAVISO"))
+        self.assertEqual(sent[4]["system"], [cached, {"type": "text", "text": "AVISO"}])
+        self.assertEqual(sent[5], {**CHAT, "model": "local"})
 
 
 if __name__ == "__main__":

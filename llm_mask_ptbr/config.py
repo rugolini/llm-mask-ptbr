@@ -22,6 +22,7 @@ class Settings:
     dictionary: dict = field(default_factory=dict)
     allow: list = field(default_factory=list)
     ner: dict | None = None
+    notice: str | None = None
     host: str = "0.0.0.0"
     port: int = 8400
 

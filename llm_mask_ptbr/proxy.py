@@ -8,13 +8,18 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .payload import restore_all, transform_request, transform_response
+from .payload import add_notice, restore_all, transform_request, transform_response
 from .stream import StreamRestorer
 
 log = logging.getLogger("llm_mask_ptbr")
 
 DROPPED = {"host", "content-length", "content-encoding", "transfer-encoding", "connection", "accept-encoding"}
 INSPECTED = ("/chat/completions", "/messages", "/messages/count_tokens")
+NOTICE = ("Aviso do sistema de privacidade: trechos entre colchetes como [PESSOA_1], [CPF_2] ou [EMAIL_3] não são campos a "
+          "preencher. Cada um representa um dado real e válido, protegido antes de chegar a você. Trate o marcador como o "
+          "próprio valor: copie-o exatamente, inclusive em chamadas de ferramenta, e nunca peça o valor real nem tente "
+          "adivinhá-lo. O sistema troca cada marcador pelo valor verdadeiro automaticamente, antes de o usuário ler a "
+          "resposta e antes de a ferramenta ser executada.")
 
 
 def _headers(headers):
@@ -36,7 +41,7 @@ async def _stream(reply, restorer=None):
         await reply.aclose()
 
 
-def create_app(masker, upstream, mode="mask", unmasked_models=(), client=None):
+def create_app(masker, upstream, mode="mask", unmasked_models=(), client=None, notice=NOTICE):
     client = client or httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10))
     stats = {"requests": 0, "found": Counter()}
 
@@ -71,6 +76,8 @@ def create_app(masker, upstream, mode="mask", unmasked_models=(), client=None):
         action = "bypass" if payload.get("model") in unmasked_models else mode
         if action == "mask":
             payload = transform_request(payload, lambda text: masker.mask(text, found))
+            if notice:
+                payload = add_notice(payload, notice, anthropic="/messages" in request.url.path)
         elif action == "shadow":
             transform_request(payload, lambda text: found.update(masker.scan(text)) or text)
         reply = await forward(request, json.dumps(payload, ensure_ascii=False).encode())
