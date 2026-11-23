@@ -3,7 +3,7 @@ import unittest
 
 import httpx
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
 from llm_mask_ptbr.detectors import BUILTIN, dictionary
@@ -38,9 +38,9 @@ class ProxyCase(unittest.IsolatedAsyncioTestCase):
 
         self.upstream = Starlette(routes=[Route("/{path:path}", upstream, methods=["GET", "POST"])])
 
-    def proxy(self, **options):
+    def proxy(self, transport=None, **options):
         masker = Masker([*BUILTIN.values(), dictionary({"PESSOA": ["Maria Souza"], "LOCAL": ['Sítio "Boa Vista"']})])
-        upstream = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.upstream))
+        upstream = httpx.AsyncClient(transport=transport or httpx.ASGITransport(app=self.upstream))
         app = create_app(masker, "http://upstream", client=upstream, **options)
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://proxy")
 
@@ -191,6 +191,72 @@ class AnthropicMessagesTest(ProxyCase):
             self.assertEqual([names[0], names[-1]], ["message_start", "message_stop"])
             stops = [i for i, e in enumerate(events) if e["type"] == "content_block_stop"]
             self.assertTrue(all(e["index"] != events[stop]["index"] for stop in stops for e in events[stop + 1:] if "index" in e))
+
+
+CHAT = {"model": "coordenacao", "messages": [{"role": "user", "content": "Maria Souza, CPF 529.982.247-25"}]}
+
+
+def echo(received):
+    return JSONResponse({"choices": [{"index": 0, "message": {"role": "assistant", "content": received["messages"][0]["content"]}}]})
+
+
+class OperationTest(ProxyCase):
+    async def test_shadow_mode_forwards_the_original_and_only_counts_what_it_would_mask(self):
+        self.reply = echo
+        with self.assertLogs("llm_mask_ptbr", "INFO") as logs:
+            async with self.proxy(mode="shadow") as client:
+                response = await client.post("/v1/chat/completions", json=CHAT)
+                stats = (await client.get("/_mask/stats")).json()
+        self.assertIn("Maria Souza, CPF 529.982.247-25", self.seen[0]["raw"])
+        self.assertEqual(response.json()["choices"][0]["message"]["content"], "Maria Souza, CPF 529.982.247-25")
+        self.assertEqual(stats, {"mode": "shadow", "requests": 1, "found": {"PESSOA": 1, "CPF": 1}})
+        entry = json.loads(logs.records[0].getMessage())
+        self.assertEqual((entry["path"], entry["model"], entry["action"], entry["found"], entry["status"]),
+                         ("/v1/chat/completions", "coordenacao", "shadow", {"PESSOA": 1, "CPF": 1}, 200))
+        self.assertFalse(any(secret in record.getMessage() for record in logs.records for secret in SECRETS))
+
+    async def test_models_served_at_home_get_the_original_text(self):
+        self.reply = lambda received: JSONResponse({"choices": [{"index": 0, "message": {"role": "assistant", "content": "[PESSOA_1]"}}]})
+        async with self.proxy(unmasked_models=["local"]) as client:
+            await client.post("/v1/chat/completions", json=CHAT)
+            response = await client.post("/v1/chat/completions", json={**CHAT, "model": "local"})
+        self.assertNotIn("Maria Souza", self.seen[0]["raw"])
+        self.assertIn("Maria Souza, CPF 529.982.247-25", self.seen[1]["raw"])
+        self.assertEqual(response.json()["choices"][0]["message"]["content"], "[PESSOA_1]")
+
+    async def test_requests_it_cannot_inspect_are_refused_instead_of_forwarded(self):
+        async with self.proxy() as client:
+            unknown = await client.post("/v1/embeddings", json={"model": "m", "input": "Maria Souza"})
+            broken = await client.post("/v1/chat/completions", content=b"Maria Souza")
+            deleted = await client.delete("/v1/files/1")
+        self.assertEqual((unknown.status_code, broken.status_code, deleted.status_code), (501, 400, 501))
+        self.assertEqual(unknown.json()["error"]["type"], "llm_mask_ptbr")
+        self.assertEqual(self.seen, [])
+
+    async def test_get_requests_pass_through_with_their_query(self):
+        self.reply = lambda received: JSONResponse({"data": [{"id": "coordenacao"}]})
+        async with self.proxy() as client:
+            response = await client.get("/v1/models?limit=5", headers={"Authorization": "Bearer k"})
+        self.assertEqual((self.seen[0]["method"], self.seen[0]["path"], self.seen[0]["headers"]["authorization"]), ("GET", "/v1/models", "Bearer k"))
+        self.assertEqual(response.json(), {"data": [{"id": "coordenacao"}]})
+
+    async def test_provider_errors_keep_their_status_and_come_back_readable(self):
+        self.reply = lambda received: JSONResponse({"error": {"message": "invalid: " + received["messages"][0]["content"]}}, 400)
+        async with self.proxy() as client:
+            rejected = await client.post("/v1/chat/completions", json=CHAT)
+            self.reply = lambda received: PlainTextResponse("upstream busy", 503)
+            busy = await client.post("/v1/chat/completions", json=CHAT)
+        self.assertNothingLeaked()
+        self.assertEqual((rejected.status_code, rejected.json()["error"]["message"]), (400, "invalid: Maria Souza, CPF 529.982.247-25"))
+        self.assertEqual((busy.status_code, busy.text), (503, "upstream busy"))
+
+    async def test_an_unreachable_provider_is_reported_as_a_bad_gateway(self):
+        def refuse(request):
+            raise httpx.ConnectError("connection refused")
+
+        async with self.proxy(transport=httpx.MockTransport(refuse)) as client:
+            response = await client.post("/v1/chat/completions", json=CHAT)
+        self.assertEqual((response.status_code, response.json()["error"]["type"]), (502, "llm_mask_ptbr"))
 
 
 if __name__ == "__main__":

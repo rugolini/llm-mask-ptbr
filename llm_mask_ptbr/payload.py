@@ -4,6 +4,10 @@ import json
 SIGNED = {"thinking", "redacted_thinking"}
 
 
+def restore_all(node, fn):
+    return _deep(node, fn)
+
+
 def _deep(node, fn):
     if isinstance(node, str):
         return fn(node)

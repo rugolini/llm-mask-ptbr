@@ -1,45 +1,101 @@
 import json
+import logging
+import time
+from collections import Counter
 
 import httpx
 from starlette.applications import Starlette
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .payload import transform_request, transform_response
+from .payload import restore_all, transform_request, transform_response
 from .stream import StreamRestorer
 
+log = logging.getLogger("llm_mask_ptbr")
+
 DROPPED = {"host", "content-length", "content-encoding", "transfer-encoding", "connection", "accept-encoding"}
+INSPECTED = ("/chat/completions", "/messages", "/messages/count_tokens")
 
 
 def _headers(headers):
     return {name: value for name, value in headers.items() if name.lower() not in DROPPED}
 
 
-async def _restored_stream(reply, restorer):
+def _error(status, message):
+    return JSONResponse({"error": {"type": "llm_mask_ptbr", "message": message}}, status)
+
+
+async def _stream(reply, restorer=None):
     try:
         async for chunk in reply.aiter_bytes():
-            if out := restorer.feed(chunk):
+            if out := restorer.feed(chunk) if restorer else chunk:
                 yield out
-        if out := restorer.close():
+        if restorer and (out := restorer.close()):
             yield out
     finally:
         await reply.aclose()
 
 
-def create_app(masker, upstream, client=None):
+def create_app(masker, upstream, mode="mask", unmasked_models=(), client=None):
     client = client or httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10))
+    stats = {"requests": 0, "found": Counter()}
 
-    async def handle(request):
-        payload = transform_request(json.loads(await request.body()), masker.mask)
-        outgoing = client.build_request("POST", upstream.rstrip("/") + request.url.path, headers=_headers(request.headers),
-                                        content=json.dumps(payload, ensure_ascii=False).encode())
-        reply = await client.send(outgoing, stream=True)
+    async def forward(request, content):
+        url = upstream.rstrip("/") + request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        outgoing = client.build_request(request.method, url, headers=_headers(request.headers), content=content)
+        return await client.send(outgoing, stream=True)
+
+    async def restored(reply):
         if reply.headers.get("content-type", "").startswith("text/event-stream"):
-            return StreamingResponse(_restored_stream(reply, StreamRestorer(masker)), reply.status_code, _headers(reply.headers))
+            return StreamingResponse(_stream(reply, StreamRestorer(masker)), reply.status_code, _headers(reply.headers))
         try:
-            restored = transform_response(json.loads(await reply.aread()), masker.restore)
+            raw = (await reply.aread()).decode()
         finally:
             await reply.aclose()
-        return Response(json.dumps(restored, ensure_ascii=False), reply.status_code, _headers(reply.headers))
+        try:
+            data = json.loads(raw)
+            data = transform_response(data, masker.restore) if reply.is_success else restore_all(data, masker.restore)
+            raw = json.dumps(data, ensure_ascii=False)
+        except ValueError:
+            raw = masker.restore(raw)
+        return Response(raw, reply.status_code, _headers(reply.headers))
 
-    return Starlette(routes=[Route("/{path:path}", handle, methods=["GET", "POST"])])
+    async def inspect(request):
+        try:
+            payload = json.loads(await request.body())
+        except ValueError:
+            payload = None
+        if not isinstance(payload, dict):
+            return _error(400, "request body is not a JSON object")
+        started, found = time.monotonic(), Counter()
+        action = "bypass" if payload.get("model") in unmasked_models else mode
+        if action == "mask":
+            payload = transform_request(payload, lambda text: masker.mask(text, found))
+        elif action == "shadow":
+            transform_request(payload, lambda text: found.update(masker.scan(text)) or text)
+        reply = await forward(request, json.dumps(payload, ensure_ascii=False).encode())
+        stats["requests"] += 1
+        stats["found"] += found
+        log.info(json.dumps({"path": request.url.path, "model": payload.get("model"), "action": action, "found": dict(found),
+                             "status": reply.status_code, "ms": round((time.monotonic() - started) * 1000)}))
+        if action == "mask":
+            return await restored(reply)
+        return StreamingResponse(_stream(reply), reply.status_code, _headers(reply.headers))
+
+    async def handle(request):
+        path = request.url.path
+        if path == "/_mask/health":
+            return JSONResponse({"status": "ok", "mode": mode})
+        if path == "/_mask/stats":
+            return JSONResponse({"mode": mode, "requests": stats["requests"], "found": dict(stats["found"])})
+        try:
+            if request.method in ("GET", "HEAD"):
+                reply = await forward(request, None)
+                return StreamingResponse(_stream(reply), reply.status_code, _headers(reply.headers))
+            if request.method == "POST" and path.endswith(INSPECTED):
+                return await inspect(request)
+        except httpx.HTTPError as error:
+            return _error(502, f"upstream unreachable: {type(error).__name__}")
+        return _error(501, f"{request.method} {path} is not inspected by llm-mask-ptbr, so it is not forwarded")
+
+    return Starlette(routes=[Route("/{path:path}", handle, methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])])

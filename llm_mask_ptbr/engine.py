@@ -25,9 +25,11 @@ class Masker:
     def scan(self, text):
         return dict(Counter(span.kind for span in self.spans(text)))
 
-    def mask(self, text):
+    def mask(self, text, found=None):
         out, pos = [], 0
         for span in self.spans(text):
+            if found is not None:
+                found[span.kind] += 1
             out += [text[pos:span.start], self.vault.token(span.kind, text[span.start:span.end])]
             pos = span.end
         return "".join(out) + text[pos:]
