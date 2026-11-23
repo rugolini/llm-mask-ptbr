@@ -25,3 +25,6 @@ allow:
 #   model: pt_core_news_lg
 #   entities: {PERSON: PESSOA}
 #   threshold: 0.5
+
+# Text appended to the system prompt in mask mode so the model treats tokens as real values. "" turns it off.
+# notice: "..."

@@ -28,6 +28,7 @@ O app não muda: só passa a apontar o `base_url` para o proxy.
   continua valendo.
 - Valores em dinheiro, datas e números comuns passam. A ideia é o modelo ainda conseguir fazer a conta.
 - Modelos servidos em casa podem ficar de fora (`unmasked_models`): o pedido para eles passa inteiro.
+- Avisa o modelo, no prompt de sistema, de que os marcadores são valores reais (ver [O aviso ao modelo](#o-aviso-ao-modelo)).
 - Modo sombra: encaminha o texto original e só conta o que mascararia. Serve para medir antes de ligar.
 - Falha fechada: pedido que ele não sabe inspecionar (`/v1/embeddings`, `/v1/responses`, corpo que não é JSON) é
   recusado com 501 ou 400. Nada segue sem passar pela máscara.
@@ -165,6 +166,18 @@ Contagem de `PESSOA` baixa demais para o que você sabe que passou por ali quer 
 painel do provedor (ou no log do seu gateway) que chegou o marcador.
 
 **Voltar atrás:** aponte o `base_url` do cliente de novo para o provedor. O proxy não guarda estado do cliente.
+
+## O aviso ao modelo
+
+Sem explicação, os modelos tratam `[PESSOA_1]` como campo de formulário por preencher e se recusam a agir ("preciso dos
+valores reais"). Aconteceu nos testes com OpenRouter e Anthropic. Por isso, no modo `mask`, o proxy acrescenta um aviso
+fixo ao fim do prompt de sistema dizendo que os marcadores são dados reais protegidos e devem ser copiados como estão.
+O texto é sempre o mesmo e vai depois do trecho em cache, então o cache do provedor continua valendo.
+
+Para trocar o texto, use `notice: "..."` no `config.yaml`; `notice: ""` desliga.
+
+Com o aviso, um efeito colateral bom: ao pedir para soletrar um CPF mascarado, um modelo respondeu `[-C-P-F-_-1-]` e
+outro se recusou a quebrar o marcador.
 
 ## Nomes fora da lista (Presidio)
 
