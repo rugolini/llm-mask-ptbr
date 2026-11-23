@@ -10,13 +10,16 @@ class Span(NamedTuple):
 
 Detector = Callable[[str], Iterable[Span]]
 
+# Start of a word, also right after a line break written out as \n or \t, as in a shell command or a code string.
+WORD_START = r"(?:(?<!\w)|(?<=\\[ntr]))"
+
 
 def dictionary(terms: dict[str, list[str]]) -> Detector:
     kinds = {value.lower(): kind for kind, values in terms.items() for value in values}
     if not kinds:
         return lambda text: ()
     alternatives = "|".join(re.escape(v) for v in sorted(kinds, key=len, reverse=True))
-    rx = re.compile(rf"(?<!\w)(?:{alternatives})(?!\w)", re.IGNORECASE)
+    rx = re.compile(rf"{WORD_START}(?:{alternatives})(?!\w)", re.IGNORECASE)
     return lambda text: (Span(m.start(), m.end(), kinds[m.group().lower()]) for m in rx.finditer(text))
 
 
@@ -33,7 +36,7 @@ def _pattern(kind, pattern, valid=lambda text: True, flags=0) -> Detector:
 
 def _labelled(kind, words, number) -> Detector:
     """A number that only means something next to the word that names it: "RG 123456789", "conta 12345-6"."""
-    return _pattern(kind, rf"(?<!\w)(?:{words})(?!\w)[^\d\n]{{0,20}}?({number})(?!\w)", flags=re.IGNORECASE)
+    return _pattern(kind, rf"{WORD_START}(?:{words})(?!\w)[^\d\n]{{0,20}}?({number})(?!\w)", flags=re.IGNORECASE)
 
 
 def _any(*detectors) -> Detector:
@@ -98,7 +101,7 @@ _PHONE = (r"(?<![\w+])(?:\+55\s?\(?\d{2}\)?\s?9?\d{4}[-\s]?\d{4}|\(\d{2}\)\s?9?\
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _DATE = r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{1,2}º?\s+de\s+[a-zç]+\s+de\s+\d{4}"
 # The street name must be capitalised, so "a rua estava vazia. Em 2020" stays as it is.
-_ADDRESS = (r"(?<!\w)(?i:rua|r\.|avenida|av\.?|alameda|al\.|travessa|tv\.|praça|rodovia|estrada|largo)\s+"
+_ADDRESS = (WORD_START + r"(?i:rua|r\.|avenida|av\.?|alameda|al\.|travessa|tv\.|praça|rodovia|estrada|largo)\s+"
             r"(?:(?:[A-ZÀ-Ý0-9][\wÀ-ÿ'.-]*|de|da|do|das|dos|e)\s+){0,6}?[A-ZÀ-Ý][\wÀ-ÿ'-]*"
             r",?\s*(?:[nN][ºo°]\.?\s*)?\d{1,5}(?!\d)"
             r"(?:\s*[,-]?\s*(?i:ap(?:to|artamento)?\.?|bloco|casa|cj\.?|conjunto|sala|andar)\s*\w+)*")

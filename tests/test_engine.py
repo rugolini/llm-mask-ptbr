@@ -91,6 +91,12 @@ class MaskerTest(unittest.TestCase):
         for text, expected in cases.items():
             self.assertEqual(masker.mask(text), expected)
 
+    def test_a_word_right_after_a_written_out_line_break_is_still_recognised(self):
+        masker = Masker([dictionary({"PESSOA": ["Maria Souza"]}), *BUILTIN.values()])
+        command = r'printf "RG 123456789\nconta 12345-6\nMaria Souza\nRua das Flores, 123\tnascido em 05/03/1980"'
+        self.assertEqual(masker.mask(command), r'printf "RG [RG_1]\n[CONTA_1]\n[PESSOA_1]\n[ENDERECO_1]\tnascido em [NASCIMENTO_1]"'
+                         .replace("[CONTA_1]", "conta [CONTA_1]"))
+
     def test_amounts_dates_and_ordinary_numbers_pass_through(self):
         masker = Masker(BUILTIN.values())
         for text in ["R$ 12.345,67 em 15/02/2027", "120 ações MSFT a US$ 512,30", "saldo de R$ 1.234.567,89",
