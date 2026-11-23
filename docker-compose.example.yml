@@ -1,0 +1,14 @@
+services:
+  llm-mask:
+    build: .
+    # With name detection by Presidio:
+    # build: {context: ., args: {NER: "1"}}
+    restart: unless-stopped
+    environment:
+      LLM_MASK_CONFIG: /config/config.yaml
+    volumes:
+      - ./config:/config:ro
+      - ./data:/data
+    # Keep the port off the network: put the client in the same Docker network, or bind to localhost.
+    ports:
+      - "127.0.0.1:8400:8400"

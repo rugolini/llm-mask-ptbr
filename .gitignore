@@ -3,5 +3,7 @@ __pycache__/
 *.egg-info/
 dist/
 *.db
-config.yaml
-dictionary.yaml
+/config.yaml
+/config/
+/data/
+/dictionary.yaml

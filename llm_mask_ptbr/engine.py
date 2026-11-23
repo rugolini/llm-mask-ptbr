@@ -4,6 +4,7 @@ from collections import Counter
 from .vault import Vault
 
 TOKEN = re.compile(r"\[[A-Z][A-Z_]*_\d+\]")
+CACHED_TEXTS = 512
 PARTIAL_TOKEN = re.compile(r"\[[A-Z_]*\d*$")
 
 
@@ -12,6 +13,7 @@ class Masker:
         self.detectors = list(detectors)
         self.vault = vault or Vault()
         self.allow = {value.lower() for value in allow}
+        self.cache = {}
 
     def spans(self, text):
         found = sorted((s for detect in self.detectors for s in detect(text)), key=lambda s: (s.start, s.start - s.end))
@@ -26,13 +28,18 @@ class Masker:
         return dict(Counter(span.kind for span in self.spans(text)))
 
     def mask(self, text, found=None):
-        out, pos = [], 0
-        for span in self.spans(text):
-            if found is not None:
-                found[span.kind] += 1
-            out += [text[pos:span.start], self.vault.token(span.kind, text[span.start:span.end])]
-            pos = span.end
-        return "".join(out) + text[pos:]
+        if text not in self.cache:
+            if len(self.cache) >= CACHED_TEXTS:
+                del self.cache[next(iter(self.cache))]
+            out, pos, spans = [], 0, self.spans(text)
+            for span in spans:
+                out += [text[pos:span.start], self.vault.token(span.kind, text[span.start:span.end])]
+                pos = span.end
+            self.cache[text] = "".join(out) + text[pos:], Counter(span.kind for span in spans)
+        masked, kinds = self.cache[text]
+        if found is not None:
+            found.update(kinds)
+        return masked
 
     def restore(self, text, escape=lambda value: value):
         def original(match):

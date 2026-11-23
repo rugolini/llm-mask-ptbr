@@ -1,0 +1,27 @@
+# Where requests go after masking: the provider or your own gateway (LiteLLM, GPUStack, OpenRouter...).
+upstream: https://openrouter.ai/api
+
+# shadow: forwards the original text and only counts what would be masked. mask: masks.
+mode: shadow
+
+# Token map. Keep it on a volume, or tokens change at every restart.
+vault: /data/vault.db
+
+# Models that run at home: their requests go through untouched.
+unmasked_models: []
+
+# Built-in detectors. Remove one to turn it off.
+detectors: [email, cpf, cnpj, card, phone, cep]
+
+# Names and other terms, one list per kind. Kept in a separate file so it never reaches git.
+dictionary_file: dictionary.yaml
+
+# Strings that are never masked, even when a detector finds them.
+allow:
+  - suporte@exemplo.com.br
+
+# Name detection by Presidio (needs the image built with NER=1).
+# ner:
+#   model: pt_core_news_lg
+#   entities: {PERSON: PESSOA}
+#   threshold: 0.5

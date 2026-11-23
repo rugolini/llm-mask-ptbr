@@ -1,8 +1,10 @@
+import importlib.util
 import os
 import tempfile
 import unittest
 
-from llm_mask_ptbr.detectors import BUILTIN, dictionary
+from llm_mask_ptbr.config import Settings, build_masker
+from llm_mask_ptbr.detectors import BUILTIN, Span, dictionary
 from llm_mask_ptbr.engine import Masker
 from llm_mask_ptbr.vault import Vault
 
@@ -59,6 +61,23 @@ class MaskerTest(unittest.TestCase):
         masker = Masker([BUILTIN["email"], BUILTIN["cpf"]])
         self.assertEqual(masker.scan("a@b.com, c@d.com, 529.982.247-25"), {"EMAIL": 2, "CPF": 1})
         self.assertEqual(masker.mask("a@b.com"), "[EMAIL_1]")
+
+    def test_a_text_seen_before_is_not_analysed_again(self):
+        calls = []
+
+        def slow_detector(text):
+            calls.append(text)
+            return [Span(0, 4, "PESSOA")]
+
+        masker = Masker([slow_detector])
+        self.assertEqual([masker.mask("Aldo veio"), masker.mask("Aldo veio")], ["[PESSOA_1] veio", "[PESSOA_1] veio"])
+        self.assertEqual(calls, ["Aldo veio"])
+
+    @unittest.skipUnless(importlib.util.find_spec("presidio_analyzer") and importlib.util.find_spec("pt_core_news_sm"),
+                         "needs the ner extra and the pt_core_news_sm model")
+    def test_presidio_finds_a_name_that_is_in_no_list(self):
+        settings = Settings(upstream="http://x", detectors=[], ner={"model": "pt_core_news_sm", "entities": {"PERSON": "PESSOA"}})
+        self.assertEqual(build_masker(settings).mask("Ontem a Fernanda Oliveira ligou."), "Ontem a [PESSOA_1] ligou.")
 
 
 if __name__ == "__main__":

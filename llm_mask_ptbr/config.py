@@ -57,4 +57,7 @@ def load(path=None, env=os.environ):
 
 def build_masker(settings):
     detectors = [dictionary(settings.dictionary), *(BUILTIN[name] for name in settings.detectors)]
+    if settings.ner is not None:
+        from .ner import presidio
+        detectors.append(presidio(**settings.ner))
     return Masker(detectors, Vault(settings.vault), settings.allow)

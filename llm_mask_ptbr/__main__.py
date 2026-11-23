@@ -9,6 +9,7 @@ from .proxy import create_app
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = load(os.environ.get("LLM_MASK_CONFIG"))
     app = create_app(build_masker(settings), settings.upstream, settings.mode, settings.unmasked_models)
     uvicorn.run(app, host=settings.host, port=settings.port, access_log=False, log_level="warning")
