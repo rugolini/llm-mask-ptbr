@@ -1,7 +1,8 @@
 # llm-mask-ptbr
 
 Proxy que troca dados pessoais por marcadores antes de o pedido sair para um modelo de linguagem na nuvem, e põe os
-valores de volta na resposta. Feito para texto em português do Brasil: CPF, CNPJ, telefone, CEP e a sua lista de nomes.
+valores de volta na resposta. Feito para texto em português do Brasil: CPF, CNPJ, RG, CNH, título de eleitor, cartão SUS, PIS, conta bancária,
+telefone, endereço, CEP e a sua lista de nomes.
 
 *English summary [at the end](#english-summary).*
 
@@ -35,19 +36,48 @@ O app não muda: só passa a apontar o `base_url` para o proxy.
 
 ## O que é mascarado
 
-| Tipo | Como é detectado | Exemplo |
-|---|---|---|
-| `CPF` | formato + dígitos verificadores | `529.982.247-25`, `52998224725` |
-| `CNPJ` | formato + dígitos verificadores (só o numérico) | `11.222.333/0001-81` |
-| `TELEFONE` | formatos brasileiros, com ou sem `+55` e DDD | `(11) 98765-4321`, `5511987654321` |
-| `EMAIL` | formato; inclui o JID do WhatsApp | `maria@exemplo.com.br` |
-| `CEP` | formato | `05422-030` |
-| `CARTAO` | 13 a 19 dígitos + Luhn | `4111 1111 1111 1111` |
-| o que você quiser | dicionário (`PESSOA`, `LOCAL`, `EMPRESA`...) | `Maria Souza` |
-| `PESSOA` fora do dicionário | opcional, por NER com o [Presidio](https://microsoft.github.io/presidio/) | ver [Nomes fora da lista](#nomes-fora-da-lista-presidio) |
+O critério é o da LGPD (art. 5º, I): informação que identifica uma pessoa ou permite identificá-la. A lei não lista
+documentos nem formatos; as regras abaixo vêm das especificações de cada documento brasileiro.
+
+Três maneiras de reconhecer:
+
+- **Pelo formato.** Documento escrito com pontuação é mascarado só pela cara, sem conferir dígito verificador. Mascarar
+  a mais não custa nada (o valor volta na resposta); exigir dígito certo deixaria passar um CPF com erro de digitação.
+- **Pelo dígito verificador.** Uma sequência só de dígitos só é mascarada se os dígitos verificadores fecharem com
+  algum documento. Sem isso, todo número de pedido ou timestamp viraria marcador.
+- **Pela palavra antes.** Números que sozinhos não dizem nada ("123456789") são mascarados quando vêm depois da palavra
+  que os nomeia ("RG 123456789", "conta 12345-6").
+
+| Tipo | Pelo formato | Pelo dígito (só dígitos) | Pela palavra antes |
+|---|---|---|---|
+| `CPF` | `529.982.247-25` | 11 dígitos válidos | |
+| `CNPJ` | `11.222.333/0001-81`, alfanumérico `12.ABC.345/01DE-35` | 14 dígitos válidos | |
+| `RG` | `12.345.678-9`, `1.234.567-X` | | `RG`, `identidade` |
+| `CNH` | | 11 dígitos válidos | `CNH`, `habilitação` |
+| `TITULO` (eleitor) | | 12 dígitos válidos | `título de eleitor`, `título eleitoral` |
+| `CNS` (cartão SUS) | `850 7529 1703 4336` | 15 dígitos válidos | |
+| `PIS` (PIS/PASEP/NIT) | `330.79244.02-1` | | `PIS`, `PASEP`, `NIT`, `NIS` |
+| `RENAVAM` | | | `RENAVAM` |
+| `PASSAPORTE` | | | `passaporte` + `FZ123456` |
+| `PLACA` | `ABC-1234`, Mercosul `BRA2E19` | | `placa` + `ABC1234` |
+| `AGENCIA`, `CONTA` | | | `agência`, `ag.`, `conta`, `c/c` |
+| `PIX` (chave aleatória) | | | `pix`, `chave` |
+| `CARTAO` | | 13 a 19 dígitos com Luhn | |
+| `TELEFONE` | `(11) 98765-4321`, `+55 11 98765-4321`, `5511987654321` | celular com DDD: `11987654321` | |
+| `EMAIL` | `maria@exemplo.com.br` (inclui o JID do WhatsApp) | | |
+| `CEP` | `05422-030` | | |
+| `NASCIMENTO` | | | `nascimento`, `nascido em`, `aniversário` + data |
+| `ENDERECO` | `Rua das Flores, 123, ap 45` (tipo de via + nome com maiúscula + número) | | |
+| o que você quiser | dicionário (`PESSOA`, `LOCAL`, `EMPRESA`...) | | |
+| `PESSOA` fora do dicionário | opcional, por NER com o [Presidio](https://microsoft.github.io/presidio/) | | |
+
+As regras de dígito de CPF, CNPJ, CNH, título e CNS foram conferidas contra a biblioteca
+[validate-docbr](https://github.com/alvarofpp/validate-docbr) em centenas de milhares de números; onde as fontes
+divergem (título de eleitor de SP e MG), o proxy aceita as duas regras.
 
 O dicionário é a parte que mais importa: nomes da família, contatos, endereço. Ele ignora maiúsculas e só casa a palavra
-inteira. Liste também as formas curtas (`Maria Souza` e `Maria`).
+inteira. Liste também as formas curtas (`Maria Souza` e `Maria`). Ele aceita qualquer texto, não só nomes: um número de
+conta ou de matrícula que você queira sempre mascarado pode ir numa lista própria.
 
 ## Instalação
 
@@ -104,7 +134,7 @@ upstream: https://openrouter.ai/api   # para onde o pedido segue depois da másc
 mode: shadow                          # shadow (só conta) ou mask (mascara)
 vault: /data/vault.db                 # mapa valor ↔ marcador; mantenha num volume
 unmasked_models: [local]              # modelos de casa: passam sem máscara
-detectors: [email, cpf, cnpj, card, phone, cep]
+# detectors: [...]                    # todos ligados por padrão; liste para restringir
 dictionary_file: dictionary.yaml      # relativo a este arquivo
 allow:                                # nunca mascarar
   - suporte@exemplo.com.br
@@ -211,7 +241,7 @@ Isto é pseudonimização: reduz o que sai de casa, não garante anonimato.
 
 - **Nome fora do dicionário passa**, a não ser que o NER pegue. Apelido, erro de digitação e nome em minúsculas também.
 - **O contexto ainda identifica.** "O marido de [PESSOA_1], que trabalha na empresa X e mora no bairro Y" diz quem é.
-  Endereço por extenso, dados de saúde e outros textos livres não são detectados (só o que estiver no dicionário).
+  Dados sensíveis da LGPD (saúde, religião, opinião política) e outros textos livres não são detectados.
 - **Valores e datas passam de propósito.**
 - **Número em campo numérico do JSON não é visto.** Um CPF enviado como número (`{"cpf": 52998224725}`) em argumento de
   ferramenta passa; só texto é inspecionado.
@@ -220,7 +250,9 @@ Isto é pseudonimização: reduz o que sai de casa, não garante anonimato.
   recusa o pedido seguinte se o texto mudar. O raciocínio aparece para o cliente com os marcadores.
 - **O modelo pode estragar um marcador** (escrever `PESSOA 1` em vez de `[PESSOA_1]`). Nesse caso ele volta como veio.
 - **Mapa fixo permite correlação.** O provedor vê que `[PESSOA_1]` é sempre a mesma pessoa, sem saber quem.
-- **CNPJ alfanumérico** (formato novo) ainda não é reconhecido.
+- **RG e conta bancária sem pontuação e sem a palavra antes passam**: cada estado e cada banco tem sua regra de dígito.
+- **Endereço em minúsculas ou sem número passa**; data de nascimento só é mascarada com a palavra antes.
+- **Código de 3 letras e 4 dígitos** (`INC-0042`) é mascarado como placa. Não vaza nada, mas o modelo vê um marcador.
 - Só as rotas listadas em [O que ele faz](#o-que-ele-faz). A Responses API da OpenAI é recusada.
 
 ## Segurança
@@ -253,7 +285,7 @@ marcador. Sem o extra `ner`, o teste do Presidio é pulado.
 
 | Arquivo | Papel |
 |---|---|
-| `llm_mask_ptbr/detectors.py` | CPF, CNPJ, telefone, e-mail, CEP, cartão, dicionário |
+| `llm_mask_ptbr/detectors.py` | documentos, telefone, e-mail, endereço, dicionário |
 | `llm_mask_ptbr/engine.py` | `Masker`: mascara, desfaz, conta |
 | `llm_mask_ptbr/vault.py` | mapa valor ↔ marcador em SQLite |
 | `llm_mask_ptbr/payload.py` | onde está o texto num pedido OpenAI ou Anthropic |
@@ -265,7 +297,8 @@ marcador. Sem o extra `ner`, o teste do Presidio é pulado.
 
 `llm-mask-ptbr` is a small self-hosted proxy that replaces personal data with stable tokens (`[PESSOA_1]`, `[CPF_1]`)
 before a request leaves for a cloud LLM, and restores the real values in the reply. It is built for Brazilian
-Portuguese text: CPF and CNPJ with check digits, Brazilian phone formats, CEP, and your own dictionary of names.
+Portuguese text: CPF, CNPJ, RG, CNH, voter ID, SUS card, PIS, bank accounts, Brazilian phone formats, street addresses,
+CEP, and your own dictionary of names.
 
 - OpenAI Chat Completions and Anthropic Messages, streaming included; tool-call arguments are masked and restored.
 - The same value always gets the same token (SQLite vault), so provider prompt caching keeps working.

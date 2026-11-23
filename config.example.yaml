@@ -10,8 +10,8 @@ vault: /data/vault.db
 # Models that run at home: their requests go through untouched.
 unmasked_models: []
 
-# Built-in detectors. Remove one to turn it off.
-detectors: [email, cpf, cnpj, card, phone, cep]
+# Built-in detectors: all on by default. List them here to keep only some.
+# detectors: [email, cpf, cnpj, card, phone, cep, rg, pis, cns, cnh, voter, renavam, passport, plate, bank, pix, birth, address]
 
 # Names and other terms, one list per kind. Kept in a separate file so it never reaches git.
 dictionary_file: dictionary.yaml

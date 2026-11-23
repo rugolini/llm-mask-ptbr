@@ -16,10 +16,30 @@ class MaskerTest(unittest.TestCase):
         self.assertEqual(masked, "Ligue para [PESSOA_1] amanhã.")
         self.assertEqual(masker.restore("Ok, ligo para [PESSOA_1]."), "Ok, ligo para Maria Souza.")
 
-    def test_a_cpf_is_masked_only_when_its_check_digits_are_right(self):
-        masker = Masker([BUILTIN["cpf"]])
-        self.assertEqual(masker.mask("CPF 529.982.247-25 e 52998224725"), "CPF [CPF_1] e [CPF_2]")
-        self.assertEqual(masker.mask("pedido 529.982.247-26, total 12345678901"), "pedido 529.982.247-26, total 12345678901")
+    def test_a_punctuated_document_is_masked_by_its_shape_even_with_wrong_check_digits(self):
+        masker = Masker(BUILTIN.values())
+        cases = {
+            "CPF 529.982.247-26": "CPF [CPF_1]",
+            "CNPJ 11.222.333/0001-82": "CNPJ [CNPJ_1]",
+            "CNPJ novo 12.ABC.345/01DE-35": "CNPJ novo [CNPJ_2]",
+            "RG 12.345.678-9 e 1.234.567-X": "RG [RG_1] e [RG_2]",
+            "PIS 330.79244.02-1": "PIS [PIS_1]",
+            "SUS 850 7529 1703 4336": "SUS [CNS_1]",
+            "placa ABC-1234 ou BRA2E19": "placa [PLACA_1] ou [PLACA_2]",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(masker.mask(text), expected)
+
+    def test_a_bare_run_of_digits_is_masked_only_when_its_check_digits_fit_a_document(self):
+        masker = Masker(BUILTIN.values())
+        valid = {"52998224725": "[CPF_1]", "11222333000181": "[CNPJ_1]", "54323194879": "[CNH_1]", "685995282038": "[TITULO_1]",
+                 "078666611694": "[TITULO_2]", "252760189550006": "[CNS_1]", "797971157104974": "[CNS_2]",
+                 "10339823509": "[CNH_2]", "435709200280": "[TITULO_3]"}
+        for number, token in valid.items():
+            self.assertEqual(masker.mask(f"doc {number}."), f"doc {token}.")
+        for number in ["11222333000182", "54323194870", "685995282039", "252760189550007", "1795300957", "123456789", "01420388900",
+                       "12345678901", "123456789012"]:
+            self.assertEqual(masker.mask(f"doc {number}."), f"doc {number}.")
 
     def test_brazilian_contact_and_document_numbers_are_masked(self):
         masker = Masker(BUILTIN.values())
@@ -30,6 +50,7 @@ class MaskerTest(unittest.TestCase):
             "cel 11 98765-4321.": "cel [TELEFONE_3].",
             "de 5511987654321@s.whatsapp.net": "de [EMAIL_2]",
             "jid 5511987654321 visto": "jid [TELEFONE_4] visto",
+            "cel 11987654321 ok": "cel [TELEFONE_5] ok",
             "CEP 05422-030": "CEP [CEP_1]",
             "CNPJ 11.222.333/0001-81": "CNPJ [CNPJ_1]",
             "cartão 4111 1111 1111 1111": "cartão [CARTAO_1]",
@@ -37,10 +58,46 @@ class MaskerTest(unittest.TestCase):
         for text, expected in cases.items():
             self.assertEqual(masker.mask(text), expected)
 
+    def test_a_number_named_by_the_word_before_it_is_masked(self):
+        masker = Masker(BUILTIN.values())
+        cases = {
+            "RG 123456789": "RG [RG_1]",
+            "identidade nº 12345678-X emitida": "identidade nº [RG_2] emitida",
+            "PIS: 67127684264": "PIS: [PIS_1]",
+            "RENAVAM 60313721592": "RENAVAM [RENAVAM_1]",
+            "passaporte FZ123456 válido": "passaporte [PASSAPORTE_1] válido",
+            "título de eleitor 6859 9528 2039": "título de eleitor [TITULO_1]",
+            "CNH 54323194870": "CNH [CNH_1]",
+            "Banco 341, agência 1234-5, conta corrente 12345-6": "Banco 341, agência [AGENCIA_1], conta corrente [CONTA_1]",
+            "ag. 0123 c/c 0045678-9": "ag. [AGENCIA_2] c/c [CONTA_2]",
+            "chave Pix 123e4567-e89b-12d3-a456-426614174000": "chave Pix [PIX_1]",
+            "nascido em 05/03/1980": "nascido em [NASCIMENTO_1]",
+            "data de nascimento: 5 de março de 1980": "data de nascimento: [NASCIMENTO_2]",
+            "placa ABC1234": "placa [PLACA_1]",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(masker.mask(text), expected)
+
+    def test_a_street_address_with_a_number_is_masked(self):
+        masker = Masker(BUILTIN.values())
+        cases = {
+            "moro na Rua das Flores, 123, ap 45, em Pinheiros": "moro na [ENDERECO_1], em Pinheiros",
+            "Av. Paulista 1000 fica longe": "[ENDERECO_2] fica longe",
+            "entrega na Alameda Santos, nº 2200 - conjunto 51.": "entrega na [ENDERECO_3].",
+            "na Rua 25 de Março, 100": "na [ENDERECO_4]",
+            "a rua estava vazia. Em 2020 choveu": "a rua estava vazia. Em 2020 choveu",
+            "a avenida principal tem 3 faixas": "a avenida principal tem 3 faixas",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(masker.mask(text), expected)
+
     def test_amounts_dates_and_ordinary_numbers_pass_through(self):
         masker = Masker(BUILTIN.values())
-        for text in ["R$ 12.345,67 em 15/02/2027", "120 ações MSFT a US$ 512,30", "CNPJ 11.222.333/0001-82",
-                     "pedido 4111 1111 1111 1112", "porta 8123, 192.168.0.10, 2026-11-23 14:30:05"]:
+        for text in ["R$ 12.345,67 em 15/02/2027", "120 ações MSFT a US$ 512,30", "saldo de R$ 1.234.567,89",
+                     "pedido 4111 1111 1111 1112", "porta 8123, 192.168.0.10, 2026-11-23 14:30:05",
+                     "o roteador GLX3000 e o commit 2b2069f548cb935824e9913eb53e6b41f42cb1e4",
+                     "a conta de luz veio R$ 312,40", "reunião em 05/03/2027", "container 123e4567-e89b-12d3-a456-426614174000",
+                     "o título do livro é 1984", "epoch 1795300957 e 1795300957123"]:
             self.assertEqual(masker.mask(text), text)
 
     def test_the_same_value_keeps_its_token_after_a_restart(self):
