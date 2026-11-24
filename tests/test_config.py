@@ -46,6 +46,15 @@ allow: [suporte@exemplo.com.br]
             with self.assertRaises(ValueError, msg=text):
                 load(write(folder, "config.yaml", text), {})
 
+    def test_listed_secrets_are_masked_wherever_they_appear_and_tools_are_named(self):
+        folder = tempfile.mkdtemp()
+        write(folder, "secrets.txt", "correct-horse\n\n  battery-staple  \n")
+        path = write(folder, "config.yaml", "upstream: http://x\nsecrets: [Tr0ub4dor]\nsecrets_file: secrets.txt\nsecret_tools: [browser_type]\n")
+        settings = load(path, {})
+        self.assertEqual(settings.secret_tools, ["browser_type"])
+        self.assertEqual(build_masker(settings).mask("usei Tr0ub4dor, correct-horse e battery-staple"),
+                         "usei [SEGREDO_1], [SEGREDO_2] e [SEGREDO_3]")
+
 
 if __name__ == "__main__":
     unittest.main()

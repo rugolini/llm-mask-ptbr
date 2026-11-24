@@ -97,6 +97,47 @@ class MaskerTest(unittest.TestCase):
         self.assertEqual(masker.mask(command), r'printf "RG [RG_1]\n[CONTA_1]\n[PESSOA_1]\n[ENDERECO_1]\tnascido em [NASCIMENTO_1]"'
                          .replace("[CONTA_1]", "conta [CONTA_1]"))
 
+    def test_passwords_and_keys_are_masked_by_label_or_shape(self):
+        masker = Masker(BUILTIN.values())
+        pem = "-----BEGIN OPENSSH PRIVATE KEY-----" + chr(10) + "abc" + chr(10) + "-----END OPENSSH PRIVATE KEY-----"
+        cases = {
+            "senha: Abacaxi#42": "senha: [SENHA_1]",
+            'password = "hunter2!"': 'password = "[SENHA_2]"',
+            "a senha é Xk9$mPq2 mesmo": "a senha é [SENHA_3] mesmo",
+            "DB_PASSWORD=s3cr3t-valor": "DB_PASSWORD=[SEGREDO_1]",
+            '{"api_key": "abc123def456ghi789"}': '{"api_key": "[SEGREDO_2]"}',
+            "Authorization: Bearer abcdefghijklmnop1234": "Authorization: Bearer [SEGREDO_3]",
+            "postgres://app:Tr0ub4dor@db:5432/x": "postgres://app:[SENHA_4]@db:5432/x",
+            "chave sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx no log": "chave [SEGREDO_4] no log",
+            "token ghp_0123456789abcdefghijABCDEFGHIJ012345 aqui": "token [SEGREDO_5] aqui",
+            "key gpustack_0123456789abcdef_0123456789abcdef0123456789abcdef": "key [SEGREDO_6]",
+            pem: "[SEGREDO_7]",
+            '{"password": "Zebra_99"}': '{"password": "[SENHA_5]"}',
+        }
+        for text, expected in cases.items():
+            self.assertEqual(masker.mask(text), expected)
+
+    def test_placeholders_and_talk_about_passwords_stay(self):
+        masker = Masker(BUILTIN.values())
+        for text in ["a senha é obrigatória", "troque a senha no painel", "DB_PASSWORD=${DB_PASSWORD}", "senha: {{secret:X}}",
+                     "password: ********", "API_KEY=<sua-chave>", "token: null", "o token expirou ontem", "senha: [SENHA_9]"]:
+            self.assertEqual(masker.mask(text), text)
+
+    def test_a_secret_seen_once_is_masked_everywhere_afterwards_even_without_a_label(self):
+        path = os.path.join(tempfile.mkdtemp(), "vault.db")
+        masker = Masker(BUILTIN.values(), Vault(path), secrets=["correct-horse"])
+        self.assertEqual(masker.mask("digitei Abacaxi#42 no campo"), "digitei Abacaxi#42 no campo")
+        self.assertEqual(masker.mask("senha: Abacaxi#42"), "senha: [SENHA_1]")
+        self.assertEqual(masker.mask("digitei Abacaxi#42 no campo"), "digitei [SENHA_1] no campo")
+        self.assertEqual(masker.mask('{"text": "Abacaxi#42"} e correct-horse'), '{"text": "[SENHA_1]"} e [SEGREDO_1]')
+        self.assertEqual(Masker(BUILTIN.values(), Vault(path)).mask("de novo Abacaxi#42"), "de novo [SENHA_1]")
+
+    def test_a_secret_token_is_only_restored_when_asked_for(self):
+        masker = Masker(BUILTIN.values())
+        masker.mask("senha: Abacaxi#42, CPF 529.982.247-25")
+        self.assertEqual(masker.restore("use [SENHA_1] e [CPF_1]"), "use [SENHA_1] e 529.982.247-25")
+        self.assertEqual(masker.restore("use [SENHA_1] e [CPF_1]", secrets=True), "use Abacaxi#42 e 529.982.247-25")
+
     def test_amounts_dates_and_ordinary_numbers_pass_through(self):
         masker = Masker(BUILTIN.values())
         for text in ["R$ 12.345,67 em 15/02/2027", "120 ações MSFT a US$ 512,30", "saldo de R$ 1.234.567,89",

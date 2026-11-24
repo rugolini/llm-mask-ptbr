@@ -1,22 +1,39 @@
 import re
 from collections import Counter
 
+from .detectors import Span
 from .vault import Vault
 
-TOKEN = re.compile(r"\[[A-Z][A-Z_]*_\d+\]")
+TOKEN = re.compile(r"\[([A-Z][A-Z_]*)_\d+\]")
 CACHED_TEXTS = 512
 PARTIAL_TOKEN = re.compile(r"\[[A-Z_]*\d*$")
+# A secret is used, never shown: its token is only restored where the caller asks for it.
+SECRET_KINDS = {"SENHA", "SEGREDO"}
+SHORTEST_SECRET = 4
 
 
 class Masker:
-    def __init__(self, detectors, vault=None, allow=()):
+    def __init__(self, detectors, vault=None, allow=(), secrets=()):
         self.detectors = list(detectors)
         self.vault = vault or Vault()
         self.allow = {value.lower() for value in allow}
         self.cache = {}
+        # Once a value was masked as a secret it is masked wherever it shows up again, label or not:
+        # a password typed into a tool comes back bare in the next request's history.
+        self.secrets = {value for value in secrets if len(value) >= SHORTEST_SECRET}
+        self.secrets |= {value for value, (kind, _) in self.vault.by_value.items() if kind in SECRET_KINDS}
+        self.known = None
+
+    def _known_secrets(self, text):
+        if not self.secrets:
+            return ()
+        if self.known is None:
+            self.known = re.compile("|".join(re.escape(value) for value in sorted(self.secrets, key=len, reverse=True)))
+        return (Span(m.start(), m.end(), "SEGREDO") for m in self.known.finditer(text))
 
     def spans(self, text):
-        found = sorted((s for detect in self.detectors for s in detect(text)), key=lambda s: (s.start, s.start - s.end))
+        found = sorted((s for detect in (self._known_secrets, *self.detectors) for s in detect(text)),
+                       key=lambda s: (s.start, s.start - s.end))
         kept, end = [], 0
         for span in found:
             if span.start >= end and text[span.start:span.end].lower() not in self.allow:
@@ -31,18 +48,27 @@ class Masker:
         if text not in self.cache:
             if len(self.cache) >= CACHED_TEXTS:
                 del self.cache[next(iter(self.cache))]
-            out, pos, spans = [], 0, self.spans(text)
+            out, pos, spans, learned = [], 0, self.spans(text), False
             for span in spans:
-                out += [text[pos:span.start], self.vault.token(span.kind, text[span.start:span.end])]
+                value = text[span.start:span.end]
+                out += [text[pos:span.start], self.vault.token(span.kind, value)]
                 pos = span.end
+                if span.kind in SECRET_KINDS and value not in self.secrets and len(value) >= SHORTEST_SECRET:
+                    self.secrets.add(value)
+                    learned = True
+            if learned:
+                self.known = None
+                self.cache.clear()
             self.cache[text] = "".join(out) + text[pos:], Counter(span.kind for span in spans)
         masked, kinds = self.cache[text]
         if found is not None:
             found.update(kinds)
         return masked
 
-    def restore(self, text, escape=lambda value: value):
+    def restore(self, text, escape=lambda value: value, secrets=False):
         def original(match):
             value = self.vault.value(match.group())
-            return match.group() if value is None else escape(value)
+            if value is None or (match.group(1) in SECRET_KINDS and not secrets):
+                return match.group()
+            return escape(value)
         return TOKEN.sub(original, text)

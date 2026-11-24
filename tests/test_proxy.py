@@ -278,5 +278,99 @@ class OperationTest(ProxyCase):
         self.assertEqual(sent[5], {**CHAT, "model": "local"})
 
 
+PASSWORD = "Abacaxi#42"
+LOGIN = {"model": "m", "messages": [{"role": "user", "content": "Entre no site. senha: " + PASSWORD}]}
+
+
+def token_seen(received):
+    return received["messages"][0]["content"].rsplit(" ", 1)[-1]
+
+
+class SecretTest(ProxyCase):
+    async def test_a_password_reaches_only_the_allowed_tool_and_is_shown_to_nobody(self):
+        def model(received):
+            token = token_seen(received)
+            call = lambda i, name, args: {"id": f"c{i}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+            return JSONResponse({"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": f"Vou digitar {token}",
+                "tool_calls": [call(1, "browser_type", {"text": token}), call(2, "send_message", {"message": f"a senha é {token}"})]}}]})
+
+        self.reply = model
+        async with self.proxy(secret_tools=["browser_type"]) as client:
+            message = (await client.post("/v1/chat/completions", json=LOGIN)).json()["choices"][0]["message"]
+            history = [*LOGIN["messages"], message, {"role": "tool", "tool_call_id": "c1", "content": "digitado " + PASSWORD}]
+            await client.post("/v1/chat/completions", json={"model": "m", "messages": history})
+        async with self.proxy() as client:
+            closed = (await client.post("/v1/chat/completions", json=LOGIN)).json()["choices"][0]["message"]
+
+        self.assertFalse(any(PASSWORD in request["raw"] for request in self.seen))
+        self.assertEqual(message["content"], "Vou digitar [SENHA_1]")
+        arguments = [json.loads(call["function"]["arguments"]) for call in message["tool_calls"]]
+        self.assertEqual(arguments, [{"text": PASSWORD}, {"message": "a senha é [SENHA_1]"}])
+        self.assertEqual(json.loads(closed["tool_calls"][0]["function"]["arguments"]), {"text": "[SENHA_1]"})
+
+    async def test_the_same_holds_for_anthropic_tool_use_blocks(self):
+        def model(received):
+            token = token_seen(received)
+            return JSONResponse({"role": "assistant", "content": [
+                {"type": "text", "text": f"Vou digitar {token}"},
+                {"type": "tool_use", "id": "t1", "name": "browser_type", "input": {"text": token}},
+                {"type": "tool_use", "id": "t2", "name": "send_message", "input": {"message": f"a senha é {token}"}}]})
+
+        self.reply = model
+        async with self.proxy(secret_tools=["browser_type"]) as client:
+            content = (await client.post("/v1/messages", json=LOGIN)).json()["content"]
+        self.assertFalse(any(PASSWORD in request["raw"] for request in self.seen))
+        self.assertEqual([content[0]["text"], content[1]["input"], content[2]["input"]],
+                         ["Vou digitar [SENHA_1]", {"text": PASSWORD}, {"message": "a senha é [SENHA_1]"}])
+
+    async def test_streamed_tool_calls_follow_the_same_rule(self):
+        for size in range(1, 12):
+            def model(received):
+                token = token_seen(received)
+                chunk = lambda delta, finish=None: {"id": "c", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+                call = lambda index, function: chunk({"tool_calls": [{"index": index, **function}]})
+                start = lambda index, name: call(index, {"id": f"c{index}", "type": "function", "function": {"name": name, "arguments": ""}})
+                typed, sent = json.dumps({"text": token}), json.dumps({"message": f"a senha é {token}"})
+                return sse([*[chunk({"content": piece}) for piece in pieces(f"Vou digitar {token}", size)],
+                            start(0, "browser_type"), *[call(0, {"function": {"arguments": piece}}) for piece in pieces(typed, size)],
+                            start(1, "send_message"), *[call(1, {"function": {"arguments": piece}}) for piece in pieces(sent, size)],
+                            chunk({}, "tool_calls")])
+
+            self.reply = model
+            async with self.proxy(secret_tools=["browser_type"]) as client:
+                response = await client.post("/v1/chat/completions", json={**LOGIN, "stream": True})
+            deltas = [event["choices"][0]["delta"] for event in received_events(response)]
+            arguments = lambda index: json.loads("".join(call["function"].get("arguments", "") for delta in deltas
+                                                         for call in delta.get("tool_calls", []) if call["index"] == index))
+            self.assertEqual("".join(delta.get("content") or "" for delta in deltas), "Vou digitar [SENHA_1]", size)
+            self.assertEqual((arguments(0), arguments(1)), ({"text": PASSWORD}, {"message": "a senha é [SENHA_1]"}), size)
+
+    async def test_streamed_anthropic_tool_use_follows_the_same_rule(self):
+        for size in range(1, 12):
+            def model(received):
+                token = token_seen(received)
+                delta = lambda index, kind, field, value: {"type": "content_block_delta", "index": index, "delta": {"type": kind, field: value}}
+                tool = lambda index, name: {"type": "content_block_start", "index": index,
+                                            "content_block": {"type": "tool_use", "id": f"t{index}", "name": name, "input": {}}}
+                typed, sent = json.dumps({"text": token}), json.dumps({"message": f"a senha é {token}"}, ensure_ascii=False)
+                return sse([{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+                            *[delta(0, "text_delta", "text", piece) for piece in pieces(f"Vou digitar {token}", size)],
+                            {"type": "content_block_stop", "index": 0},
+                            tool(1, "browser_type"), *[delta(1, "input_json_delta", "partial_json", piece) for piece in pieces(typed, size)],
+                            {"type": "content_block_stop", "index": 1},
+                            tool(2, "send_message"), *[delta(2, "input_json_delta", "partial_json", piece) for piece in pieces(sent, size)],
+                            {"type": "content_block_stop", "index": 2}])
+
+            self.reply = model
+            async with self.proxy(secret_tools=["browser_type"]) as client:
+                response = await client.post("/v1/messages", json={**LOGIN, "stream": True})
+            events = received_events(response)
+            joined = lambda index, field: "".join(e["delta"][field] for e in events if e["type"] == "content_block_delta" and e["index"] == index)
+            self.assertEqual(joined(0, "text"), "Vou digitar [SENHA_1]", size)
+            self.assertEqual((json.loads(joined(1, "partial_json")), json.loads(joined(2, "partial_json"))),
+                             ({"text": PASSWORD}, {"message": "a senha é [SENHA_1]"}), size)
+
+
 if __name__ == "__main__":
     unittest.main()

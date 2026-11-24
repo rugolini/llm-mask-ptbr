@@ -29,6 +29,7 @@ O app não muda: só passa a apontar o `base_url` para o proxy.
   continua valendo.
 - Valores em dinheiro, datas e números comuns passam. A ideia é o modelo ainda conseguir fazer a conta.
 - Modelos servidos em casa podem ficar de fora (`unmasked_models`): o pedido para eles passa inteiro.
+- Senhas e chaves são mascaradas e só voltam nos argumentos de ferramentas que você autorizar; nunca no texto (ver [Senhas e chaves](#senhas-e-chaves-usadas-nunca-mostradas)).
 - Avisa o modelo, no prompt de sistema, de que os marcadores são valores reais (ver [O aviso ao modelo](#o-aviso-ao-modelo)).
 - Modo sombra: encaminha o texto original e só conta o que mascararia. Serve para medir antes de ligar.
 - Falha fechada: pedido que ele não sabe inspecionar (`/v1/embeddings`, `/v1/responses`, corpo que não é JSON) é
@@ -196,6 +197,34 @@ Contagem de `PESSOA` baixa demais para o que você sabe que passou por ali quer 
 painel do provedor (ou no log do seu gateway) que chegou o marcador.
 
 **Voltar atrás:** aponte o `base_url` do cliente de novo para o provedor. O proxy não guarda estado do cliente.
+
+## Senhas e chaves: usadas, nunca mostradas
+
+Senha e chave de API têm regra própria, mais dura que a dos outros dados.
+
+**Como são reconhecidas** (marcadores `[SENHA_n]` e `[SEGREDO_n]`):
+
+- **Pelo rótulo:** `senha: ...`, `password = "..."`, `"api_key": "..."`, `DB_PASSWORD=...`, `Authorization: Bearer ...`,
+  `usuario:senha@` numa URL. Em texto corrido ("a senha é ..."), só o que tem cara de senha: algum dígito ou símbolo.
+- **Pelo formato de chave conhecida:** `sk-...`, `ghp_...`, `github_pat_...`, `glpat-...`, `AKIA...`, `AIza...`, `xox?-...`,
+  JWT (`eyJ...`), chave do age, bloco `-----BEGIN ... PRIVATE KEY-----`.
+- **Pelo valor exato:** os que você listar em `secrets` ou num `secrets_file` (um por linha) são mascarados onde aparecerem.
+- **Pela memória do proxy:** um valor que já foi mascarado como segredo passa a ser mascarado sempre, com ou sem rótulo.
+  Sem isso, a senha digitada por uma ferramenta voltaria em claro no histórico do pedido seguinte.
+
+Variável (`${SENHA}`), campo de modelo (`{{...}}`, `<sua-chave>`), asteriscos e `null` não são tratados como segredo.
+
+**Onde o valor é devolvido:** em lugar nenhum, por padrão. Nem no texto da resposta, nem para o próprio usuário. Só nos
+argumentos das ferramentas listadas em `secret_tools`:
+
+```yaml
+secret_tools: [browser_type]   # só esta ferramenta recebe a senha de verdade
+```
+
+Assim uma página maliciosa que mande o modelo "pesquisar por `[SENHA_1]`" ou enviá-la numa mensagem recebe o marcador,
+não a senha. Liste só ferramentas que escrevem num campo; nunca busca na web, envio de mensagem, pedido HTTP ou terminal.
+
+O que continua passando: senha dita sem rótulo, fora da lista e nunca vista antes ("é abacaxi42").
 
 ## O aviso ao modelo
 

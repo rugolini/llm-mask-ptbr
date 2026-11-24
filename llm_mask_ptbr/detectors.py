@@ -106,9 +106,40 @@ _ADDRESS = (WORD_START + r"(?i:rua|r\.|avenida|av\.?|alameda|al\.|travessa|tv\.|
             r",?\s*(?:[nN][ºo°]\.?\s*)?\d{1,5}(?!\d)"
             r"(?:\s*[,-]?\s*(?i:ap(?:to|artamento)?\.?|bloco|casa|cj\.?|conjunto|sala|andar)\s*\w+)*")
 
+_PLACEHOLDER = re.compile(r"^(?:[$<*\[]|\{\{)|^(?:null|none|true|false|changeme|redacted|x{3,}|\.{3,})$", re.IGNORECASE)
+
+
+def _real(value):
+    """Not a variable, a template field, a row of asterisks or a token this proxy already wrote."""
+    return not _PLACEHOLDER.search(value) and len(set(value)) > 1
+
+
+_VALUE = r"[^\s\"',;]{3,}[^\s\"',;.]"
+_PASSWORD = _any(
+    _pattern("SENHA", WORD_START + r"(?:senha|password|passwd|passphrase|pwd)[\"']?\s*[:=]\s*[\"']?(" + _VALUE + ")", _real, re.IGNORECASE),
+    # In running text ("a senha é ...") only something that looks like a password: a digit or a symbol in it.
+    _pattern("SENHA", WORD_START + r"(?:senha|password)\s+(?:é|eh|is)\s+[\"']?((?=[^\s\"']*[\d!@#$%&*_+=-])" + _VALUE + ")", _real,
+             re.IGNORECASE),
+    _pattern("SENHA", r"://[^/\s:@]+:([^@\s/]{3,})@", _real),
+)
+_KEY = _any(
+    _pattern("SEGREDO", r"(?<![A-Za-z0-9])[A-Za-z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY)[A-Za-z0-9_]*"
+                        r"\s*[:=]\s*[\"']?([^\s\"']{6,})", _real),
+    _pattern("SEGREDO", WORD_START + r"[\"']?(?:api[_-]?key|secret|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token"
+                        r"|token)[\"']?\s*[:=]\s*[\"']?((?=[^\s\"']*\d)[^\s\"',;}]{8,})", _real, re.IGNORECASE),
+    _pattern("SEGREDO", r"(?i:\b(?:Bearer|Basic))\s+([A-Za-z0-9._~+/=-]{16,})", _real),
+    _pattern("SEGREDO", r"(?<![A-Za-z0-9_-])(?:sk-[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9]{30,}"
+                        r"|github_pat_[A-Za-z0-9_]{40,}|glpat-[A-Za-z0-9_-]{20,}|gpustack_[a-f0-9]{16}_[a-f0-9]{32}|AKIA[0-9A-Z]{16}"
+                        r"|AIza[0-9A-Za-z_-]{35}|xox[baprs]-[A-Za-z0-9-]{10,}|AGE-SECRET-KEY-1[0-9A-Z]{50,}"
+                        r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})"),
+    _pattern("SEGREDO", r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+)
+
 # A punctuated document is masked by its shape alone: masking too much costs nothing, a typo in a check digit would leak.
 # A bare run of digits needs valid check digits or the word that names it, or it would swallow order numbers and timestamps.
 BUILTIN = {
+    "password": _PASSWORD,
+    "key": _KEY,
     "email": _pattern("EMAIL", r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"),
     "cpf": _any(_pattern("CPF", r"(?<!\d)\d{3}\.\d{3}\.\d{3}-\d{2}(?!\d)"),
                 _pattern("CPF", r"(?<!\d)\d{9}-?\d{2}(?!\d)", _cpf)),

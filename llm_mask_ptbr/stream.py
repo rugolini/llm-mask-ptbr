@@ -10,8 +10,10 @@ def _json_escaped(value):
 class StreamRestorer:
     """Restores tokens in a server-sent event stream, holding back a token that is cut between two events."""
 
-    def __init__(self, masker):
+    def __init__(self, masker, secret_tools=()):
         self.masker = masker
+        self.secret_tools = set(secret_tools)
+        self.tools = {}
         self.buffer = b""
         self.held = {}
         self.kinds = {}
@@ -46,12 +48,15 @@ class StreamRestorer:
 
     def _anthropic(self, data):
         key = ("block", data.get("index"))
+        block = data.get("content_block") or {}
+        if data.get("type") == "content_block_start" and block.get("type") == "tool_use":
+            self.tools[key] = block.get("name")
         if data.get("type") == "content_block_delta":
             delta = data.get("delta") or {}
             if delta.get("type") == "text_delta":
                 delta["text"] = self._push(key, delta["text"])
             elif delta.get("type") == "input_json_delta":
-                delta["partial_json"] = self._push(key, delta["partial_json"], _json_escaped)
+                delta["partial_json"] = self._push(key, delta["partial_json"], _json_escaped, self.tools.get(key) in self.secret_tools)
             if key in self.held:
                 self.kinds[key] = delta.get("type")
         elif data.get("type") == "content_block_stop" and key in self.held:
@@ -69,9 +74,11 @@ class StreamRestorer:
             if isinstance(delta.get("content"), str):
                 delta["content"] = self._push(("content", index), delta["content"])
             for call in delta.get("tool_calls") or []:
-                function = call.get("function") or {}
+                function, key = call.get("function") or {}, ("call", index, call.get("index", 0))
+                if function.get("name"):
+                    self.tools[key] = function["name"]
                 if isinstance(function.get("arguments"), str):
-                    function["arguments"] = self._push(("call", index, call.get("index", 0)), function["arguments"], _json_escaped)
+                    function["arguments"] = self._push(key, function["arguments"], _json_escaped, self.tools.get(key) in self.secret_tools)
             if choice.get("finish_reason"):
                 for key in [key for key in self.held if key[1] == index]:
                     rest = self.held.pop(key)
@@ -80,10 +87,10 @@ class StreamRestorer:
                     else:
                         delta.setdefault("tool_calls", []).append({"index": key[2], "function": {"arguments": rest}})
 
-    def _push(self, key, text, escape=lambda value: value):
+    def _push(self, key, text, escape=lambda value: value, secrets=False):
         text = self.held.pop(key, "") + text
         partial = PARTIAL_TOKEN.search(text)
         if partial:
             self.held[key] = text[partial.start():]
             text = text[:partial.start()]
-        return self.masker.restore(text, escape)
+        return self.masker.restore(text, escape, secrets)

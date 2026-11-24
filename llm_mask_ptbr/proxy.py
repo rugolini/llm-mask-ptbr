@@ -19,7 +19,9 @@ NOTICE = ("Aviso do sistema de privacidade: trechos entre colchetes como [PESSOA
           "preencher. Cada um representa um dado real e válido, protegido antes de chegar a você. Trate o marcador como o "
           "próprio valor: copie-o exatamente, inclusive em chamadas de ferramenta, e nunca peça o valor real nem tente "
           "adivinhá-lo. O sistema troca cada marcador pelo valor verdadeiro automaticamente, antes de o usuário ler a "
-          "resposta e antes de a ferramenta ser executada.")
+          "resposta e antes de a ferramenta ser executada. Exceção: [SENHA_n] e [SEGREDO_n] são segredos. Use-os só no "
+          "argumento da ferramenta que precisa do valor (digitar num campo de login, por exemplo). Eles nunca são trocados no "
+          "texto da resposta, em mensagens, em notas ou na memória: ali o marcador segue como está, e é assim que deve ser.")
 
 
 def _headers(headers):
@@ -41,7 +43,12 @@ async def _stream(reply, restorer=None):
         await reply.aclose()
 
 
-def create_app(masker, upstream, mode="mask", unmasked_models=(), client=None, notice=NOTICE):
+def create_app(masker, upstream, mode="mask", unmasked_models=(), client=None, notice=NOTICE, secret_tools=()):
+    secret_tools = set(secret_tools)
+
+    def for_tool(name):
+        return lambda text: masker.restore(text, secrets=name in secret_tools)
+
     client = client or httpx.AsyncClient(timeout=httpx.Timeout(600, connect=10))
     stats = {"requests": 0, "found": Counter()}
 
@@ -52,14 +59,14 @@ def create_app(masker, upstream, mode="mask", unmasked_models=(), client=None, n
 
     async def restored(reply):
         if reply.headers.get("content-type", "").startswith("text/event-stream"):
-            return StreamingResponse(_stream(reply, StreamRestorer(masker)), reply.status_code, _headers(reply.headers))
+            return StreamingResponse(_stream(reply, StreamRestorer(masker, secret_tools)), reply.status_code, _headers(reply.headers))
         try:
             raw = (await reply.aread()).decode()
         finally:
             await reply.aclose()
         try:
             data = json.loads(raw)
-            data = transform_response(data, masker.restore) if reply.is_success else restore_all(data, masker.restore)
+            data = transform_response(data, masker.restore, for_tool) if reply.is_success else restore_all(data, masker.restore)
             raw = json.dumps(data, ensure_ascii=False)
         except ValueError:
             raw = masker.restore(raw)

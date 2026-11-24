@@ -25,15 +25,15 @@ def _json_string(text, fn):
         return fn(text)
 
 
-def _content(content, fn):
+def _content(content, fn, for_tool=None):
     if isinstance(content, str):
         return fn(content)
     if isinstance(content, list):
-        return [_block(block, fn) for block in content]
+        return [_block(block, fn, for_tool) for block in content]
     return content
 
 
-def _block(block, fn):
+def _block(block, fn, for_tool=None):
     if not isinstance(block, dict):
         return block
     if block.get("type") in SIGNED:
@@ -42,26 +42,26 @@ def _block(block, fn):
     if isinstance(block.get("text"), str):
         block["text"] = fn(block["text"])
     if "input" in block:
-        block["input"] = _deep(block["input"], fn)
+        block["input"] = _deep(block["input"], for_tool(block.get("name")) if for_tool else fn)
     if "content" in block:
-        block["content"] = _content(block["content"], fn)
+        block["content"] = _content(block["content"], fn, for_tool)
     return block
 
 
-def _message(message, fn):
+def _message(message, fn, for_tool=None):
     message = dict(message)
     if "content" in message:
-        message["content"] = _content(message["content"], fn)
+        message["content"] = _content(message["content"], fn, for_tool)
     if message.get("tool_calls"):
-        message["tool_calls"] = [_tool_call(call, fn) for call in message["tool_calls"]]
+        message["tool_calls"] = [_tool_call(call, fn, for_tool) for call in message["tool_calls"]]
     return message
 
 
-def _tool_call(call, fn):
+def _tool_call(call, fn, for_tool=None):
     call = dict(call)
     function = dict(call.get("function") or {})
     if isinstance(function.get("arguments"), str):
-        function["arguments"] = _json_string(function["arguments"], fn)
+        function["arguments"] = _json_string(function["arguments"], for_tool(function.get("name")) if for_tool else fn)
     call["function"] = function
     return call
 
@@ -74,12 +74,13 @@ def transform_request(body, fn):
     return body
 
 
-def transform_response(body, fn):
+def transform_response(body, fn, for_tool=None):
+    """for_tool(name) gives the function for that tool's arguments, where a secret may be restored; fn is for everything else."""
     body = dict(body)
     if isinstance(body.get("content"), list):
-        body["content"] = _content(body["content"], fn)
+        body["content"] = _content(body["content"], fn, for_tool)
     if isinstance(body.get("choices"), list):
-        body["choices"] = [{**choice, "message": _message(choice["message"], fn)} if isinstance(choice.get("message"), dict)
+        body["choices"] = [{**choice, "message": _message(choice["message"], fn, for_tool)} if isinstance(choice.get("message"), dict)
                            else choice for choice in body["choices"]]
     return body
 

@@ -23,6 +23,8 @@ class Settings:
     allow: list = field(default_factory=list)
     ner: dict | None = None
     notice: str | None = None
+    secrets: list = field(default_factory=list)
+    secret_tools: list = field(default_factory=list)
     host: str = "0.0.0.0"
     port: int = 8400
 
@@ -38,10 +40,14 @@ def load(path=None, env=os.environ):
     if extra := data.pop("dictionary_file", None):
         for kind, values in _read(os.path.join(os.path.dirname(path), extra)).items():
             terms[kind] = [*terms.get(kind, []), *values]
+    secrets = [str(value) for value in data.pop("secrets", None) or []]
+    if extra := data.pop("secrets_file", None):
+        with open(os.path.join(os.path.dirname(path), extra)) as file:
+            secrets += [line.strip() for line in file if line.strip()]
     known = {f.name for f in fields(Settings)}
     if unknown := set(data) - known:
         raise ValueError(f"unknown settings: {sorted(unknown)}")
-    settings = Settings(**data, dictionary=terms)
+    settings = Settings(**data, dictionary=terms, secrets=secrets)
     for name in ("upstream", "mode", "vault", "host", "port"):
         if value := env.get(f"LLM_MASK_{name.upper()}"):
             setattr(settings, name, int(value) if name == "port" else value)
@@ -61,4 +67,4 @@ def build_masker(settings):
     if settings.ner is not None:
         from .ner import presidio
         detectors.append(presidio(**settings.ner))
-    return Masker(detectors, Vault(settings.vault), settings.allow)
+    return Masker(detectors, Vault(settings.vault), settings.allow, settings.secrets)

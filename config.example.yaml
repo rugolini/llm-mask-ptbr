@@ -28,3 +28,8 @@ allow:
 
 # Text appended to the system prompt in mask mode so the model treats tokens as real values. "" turns it off.
 # notice: "..."
+
+# Secrets masked wherever they appear, label or not. Keep the list short: the proxy holds these values.
+# secrets_file: secrets.txt        # one per line, next to this file
+# Tools whose arguments get the real secret. Everything else, the reply text included, keeps the token. Default: none.
+# secret_tools: [browser_type]
