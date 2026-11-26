@@ -132,6 +132,18 @@ class MaskerTest(unittest.TestCase):
         self.assertEqual(masker.mask('{"text": "Abacaxi#42"} e correct-horse'), '{"text": "[SENHA_1]"} e [SEGREDO_1]')
         self.assertEqual(Masker(BUILTIN.values(), Vault(path)).mask("de novo Abacaxi#42"), "de novo [SENHA_1]")
 
+    def test_a_plain_word_after_a_password_label_is_not_masked_elsewhere(self):
+        masker = Masker(BUILTIN.values(), Vault())
+        self.assertEqual(masker.mask("campo senha: ainda vazio"), "campo senha: [SENHA_1] vazio")
+        self.assertEqual(masker.mask("ele ainda não chegou"), "ele ainda não chegou")
+
+    def test_a_plain_word_already_in_the_vault_as_a_password_is_not_masked_elsewhere(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "vault.db")
+            Vault(path).token("SENHA", "ainda")
+            masker = Masker(BUILTIN.values(), Vault(path))
+            self.assertEqual(masker.mask("ele ainda não chegou"), "ele ainda não chegou")
+
     def test_a_secret_token_is_only_restored_when_asked_for(self):
         masker = Masker(BUILTIN.values())
         masker.mask("senha: Abacaxi#42, CPF 529.982.247-25")
