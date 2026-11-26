@@ -12,6 +12,11 @@ SECRET_KINDS = {"SENHA", "SEGREDO"}
 SHORTEST_SECRET = 4
 
 
+def _worth_learning(value):
+    # A lowercase word after "senha:" is as likely prose as a password; learnt, it would be masked in every later text.
+    return len(value) >= SHORTEST_SECRET and not (value.isalpha() and value.islower())
+
+
 class Masker:
     def __init__(self, detectors, vault=None, allow=(), secrets=()):
         self.detectors = list(detectors)
@@ -21,7 +26,8 @@ class Masker:
         # Once a value was masked as a secret it is masked wherever it shows up again, label or not:
         # a password typed into a tool comes back bare in the next request's history.
         self.secrets = {value for value in secrets if len(value) >= SHORTEST_SECRET}
-        self.secrets |= {value for value, (kind, _) in self.vault.by_value.items() if kind in SECRET_KINDS}
+        self.secrets |= {value for value, (kind, _) in self.vault.by_value.items()
+                         if kind in SECRET_KINDS and _worth_learning(value)}
         self.known = None
 
     def _known_secrets(self, text):
@@ -53,7 +59,7 @@ class Masker:
                 value = text[span.start:span.end]
                 out += [text[pos:span.start], self.vault.token(span.kind, value)]
                 pos = span.end
-                if span.kind in SECRET_KINDS and value not in self.secrets and len(value) >= SHORTEST_SECRET:
+                if span.kind in SECRET_KINDS and value not in self.secrets and _worth_learning(value):
                     self.secrets.add(value)
                     learned = True
             if learned:
